@@ -1,0 +1,62 @@
+name: release
+
+# Publishes to PyPI when a version tag is pushed, through PyPI Trusted
+# Publishing (OpenID Connect): no API token lives in this repository.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y gcc gcc-aarch64-linux-gnu qemu-user-static
+      - run: pip install -e ".[dev]"
+      - run: pytest -q -rs
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build twine
+      - run: python -m build
+      - run: python -m twine check dist/*
+      # PyPI does not allow a version to be replaced, so a tag that disagrees
+      # with the packaged version must stop the release here.
+      - name: Tag must match the packaged version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(python -c "import re,pathlib;print(re.search(r'__version__ = \"(.+?)\"', pathlib.Path('src/fpparity/__init__.py').read_text()).group(1))")
+          test "v$version" = "${GITHUB_REF#refs/tags/}" || { echo "tag ${GITHUB_REF#refs/tags/} != v$version"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

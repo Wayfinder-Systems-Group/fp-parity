@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fp-parity"
+# Declared once, in fpparity/__init__.py, so the wheel metadata and the code
+# it contains cannot disagree.
+dynamic = ["version"]
+description = "Find where the same C or C++ numeric code produces different bits across compilers, flags, and CPU architectures, and name the cause."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Wayfinder Systems Group" }]
+keywords = ["floating-point", "determinism", "reproducibility", "fma", "cross-platform", "qnx", "aarch64", "embedded", "safety", "certification"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: C",
+  "Programming Language :: C++",
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development :: Quality Assurance",
+  "Topic :: Software Development :: Testing",
+  "Topic :: Software Development :: Embedded Systems",
+]
+dependencies = ["tomli>=1.1; python_version < '3.11'"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+fp-parity = "fpparity.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Wayfinder-Systems-Group/fp-parity"
+
+[tool.setuptools.dynamic]
+version = { attr = "fpparity.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+fpparity = ["data/*.h", "data/*.c"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
