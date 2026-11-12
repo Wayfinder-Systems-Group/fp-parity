@@ -16,9 +16,15 @@
  *   ieee.       operations IEEE 754 requires to be correctly rounded
  *   subnormal.  values below the normal range (flush-to-zero)
  *   convert.    narrowing and rounding conversions
+ *   text.       the C library's conversion between decimal text and double
+ *               (strtod, printf %f/%e/%g); the C standard does not require
+ *               either to round correctly, and QNX 8.0's libc measurably
+ *               differs from glibc on both
  */
 #include <float.h>
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 #include "fpparity.h"
 
@@ -37,6 +43,58 @@ static volatile float in_fb = 10.0f;
 static volatile float in_fc = -1.0f;
 static volatile double terms[8] = {1e16, 1.0, -1e16, 1.0, 3.0e-17, 0.5, 1e-3, -0.25};
 static volatile int n_terms = 8;
+
+/* text.: decimal tokens that sit at or near a rounding boundary, so a parser
+   that is not correctly rounded lands one ulp off. Read through volatile
+   storage so the compiler cannot evaluate strtod at build time. */
+static volatile const char *const tokens[] = {
+    "2.2250738585072011e-308",   /* the classic hard case near DBL_MIN */
+    "2.4703282292062328e-324",   /* just above half the smallest subnormal */
+    "9007199254740993",          /* 2^53 + 1: an exact tie, rounds to even */
+    "1.00000000000000011102230246251565404236316680908203125", /* tie above 1 */
+    "7.038531e-26",
+    "864834083.165500044823",    /* long expansions in the 7.9e7..8.7e8 band */
+    "87402596.513749986887",
+};
+#define N_TOKENS ((int)(sizeof tokens / sizeof tokens[0]))
+
+/* Large values whose %.12f expansion is long: the band where one C library
+   was measured printing the last digit one low. */
+static volatile double fmt_values[] = {
+    864834083.165500044823, 87402596.513749986887, 79475591.683449998498,
+    739731050.611500024796, 406308110.065500020981, 686311477.133499979973,
+};
+#define N_FMT ((int)(sizeof fmt_values / sizeof fmt_values[0]))
+
+static double parse_token(int i)
+{
+    char buf[96];
+    const volatile char *src = tokens[i];
+    size_t k = 0;
+    while (src[k] != '\0' && k + 1 < sizeof buf) {
+        buf[k] = src[k];
+        k++;
+    }
+    buf[k] = '\0';
+    return strtod(buf, NULL);
+}
+
+/* An exact digest of the printed text: every character folded into an
+   integer below 2^32, so the double holding it is exact and any changed
+   character changes the bits. */
+static double text_digest(const char *fmt)
+{
+    unsigned long h = 5381u;
+    char buf[128];
+    for (int i = 0; i < N_FMT; i++) {
+        snprintf(buf, sizeof buf, fmt, fmt_values[i]);
+        for (const char *p = buf; *p; p++) {
+            h = (h * 33u + (unsigned char)*p) & 0xffffffffu;
+        }
+        h = (h * 33u + '\n') & 0xffffffffu;
+    }
+    return (double)h;
+}
 
 int main(void)
 {
@@ -95,6 +153,21 @@ int main(void)
        rounding mode. */
     fpp_emit_d("convert.f32_round", (double)(float)x);
     fpp_emit_d("convert.nearbyint_half", nearbyint(in_two_and_half));
+
+    /* text.: parse each token with strtod, and digest the printf output for
+       three float formats over the long-expansion values. */
+    {
+        static const char *const names[] = {
+            "text.strtod_dbl_min", "text.strtod_half_subnormal", "text.strtod_tie_2p53",
+            "text.strtod_tie_above_1", "text.strtod_short", "text.strtod_long_1", "text.strtod_long_2",
+        };
+        for (int i = 0; i < N_TOKENS; i++) {
+            fpp_emit_d(names[i], parse_token(i));
+        }
+    }
+    fpp_emit_d("text.printf_f12", text_digest("%.12f"));
+    fpp_emit_d("text.printf_e17", text_digest("%.17e"));
+    fpp_emit_d("text.printf_g17", text_digest("%.17g"));
 
     return 0;
 }

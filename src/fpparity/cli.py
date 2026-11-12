@@ -1,7 +1,8 @@
 """fp-parity command line.
 
-Exit codes: 0 every target matched the baseline bit for bit, 1 at least one
-value differs, 2 usage, configuration, or build error.
+Exit codes: 0 every target matched the baseline bit for bit (scan: no
+conversion found), 1 at least one value differs (scan: a conversion found),
+2 usage, configuration, or build error.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from .config import DEFAULT_NAME, Config, ConfigError, from_dict, load
 from .detect import detect, starter_config
 from .explain import Explanation, explain
 from .protocol import Value, parse_output
+from .scan import scan_paths
 
 EXIT_OK, EXIT_DIFF, EXIT_USAGE = 0, 1, 2
 
@@ -114,10 +116,38 @@ def _print_explanation(ex: Explanation) -> None:
     for f in ex.findings:
         where = {"target": "on this target", "baseline": "on the baseline", "both": "on both"}[f.side]
         print("    {} {} removes {}: {}".format(f.flag, where, ", ".join(f.resolved), f.meaning))
-    if ex.unexplained:
-        print("    no compiler flag removes {}: the math library or the hardware differ".format(", ".join(ex.unexplained)))
+    text = [n for n in ex.unexplained if n.startswith("text.")]
+    other = [n for n in ex.unexplained if not n.startswith("text.")]
+    if text:
+        print("    no compiler flag removes {}: the C library converts between text and floating point "
+              "differently (strtod and printf need not round correctly); run `fp-parity scan` on your "
+              "sources to find these calls".format(", ".join(text)))
+    if other:
+        print("    no compiler flag removes {}: the math library or the hardware differ".format(", ".join(other)))
     if ex.skipped:
         print("    flags a compiler rejected, not tried: {}".format(", ".join(ex.skipped)))
+
+
+def run_scan(paths: Sequence[Path], allow: Sequence[str], json_path: Optional[Path]) -> int:
+    try:
+        files, hits = scan_paths(paths, allow)
+    except FileNotFoundError as exc:
+        print("fp-parity: no such file or directory: {}".format(exc), file=sys.stderr)
+        return EXIT_USAGE
+    print("fp-parity {}: scanned {} source file(s), {} conversion(s) through the C library or a locale".format(
+        __version__, len(files), len(hits)))
+    for h in hits:
+        print("  " + str(h))
+    if hits:
+        print("these round differently on different C libraries; use std::to_chars / std::from_chars, "
+              "or your own correctly rounded routine (then --allow it)")
+    if json_path is not None:
+        json_path.write_text(json.dumps({
+            "version": __version__,
+            "files": len(files),
+            "hits": [h.__dict__ for h in hits],
+        }, indent=2) + "\n", encoding="utf-8")
+    return EXIT_DIFF if hits else EXIT_OK
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -138,9 +168,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     init.add_argument("--source", action="append", default=None, help="harness source file (repeatable)")
     init.add_argument("--force", action="store_true", help="overwrite an existing config")
     sub.add_parser("include-dir", help="print the directory that holds fpparity.h")
+    scan = sub.add_parser("scan", help="find float <-> text conversions that go through the C library or a locale")
+    scan.add_argument("paths", nargs="+", type=Path, help="source files or directories")
+    scan.add_argument("--allow", action="append", default=[], metavar="PATTERN",
+                      help="file name or glob to skip, such as your own conversion routine (repeatable)")
+    scan.add_argument("--json", type=Path, help="also write the hits as JSON to this path")
 
     args = ap.parse_args(argv)
     try:
+        if args.command == "scan":
+            return run_scan(args.paths, args.allow, args.json)
         if args.command == "include-dir":
             print(DATA_DIR)
             return EXIT_OK

@@ -14,9 +14,9 @@ time.
 
 ```
 $ fp-parity probe --explain
-fp-parity 0.1.0: baseline native-gcc, 23 values
+fp-parity 0.2.0: baseline native-gcc, 33 values
 
-aarch64-gcc: 4 of 23 values differ
+aarch64-gcc: 4 of 33 values differ
   contract.residual            different bits
       baseline 0x0000000000000000 (0.0)
       target   0x3c90000000000000 (5.551115123125783e-17)
@@ -40,12 +40,46 @@ Python 3.9 or newer. The compilers are yours: fp-parity calls whatever `cc`
 each target names, and runs the result directly or through a `runner` such as
 `qemu-aarch64-static` or `ssh`.
 
-## Two ways to use it
+## Three ways to use it
 
 **Probe a toolchain.** `fp-parity probe` builds a bundled probe that emits one
 value per known source of difference (FMA contraction, excess precision,
-reassociation, math library functions, subnormals, conversions) for every
-target. With no config file it uses the compilers it finds on the machine.
+reassociation, math library functions, subnormals, conversions, and the C
+library's conversion between decimal text and double) for every target. With
+no config file it uses the compilers it finds on the machine.
+
+**Scan your sources for text conversions.** Arithmetic can match bit for bit
+on every target and the output file still differs, because the bytes pass
+through `strtod` or `printf("%.12f")` on the way in or out, and the C standard
+does not require either to round correctly. QNX 8.0's C library, measured
+against glibc: `strtod` rounds 59,377 of 336,881 decimal tokens one ulp
+differently, and `printf("%.12f")` prints the last digit one low for 8,875 of
+300,000 values between 7.9e7 and 8.7e8. `fp-parity scan` finds every such call
+with no compiler and no build:
+
+```
+$ fp-parity scan src/
+fp-parity 0.2.0: scanned 26 source file(s), 2 conversion(s) through the C library or a locale
+  src/record.cpp:88: snprintf (format): std::snprintf(buf, sizeof buf, "%.12f", x);
+  src/load.cpp:41: stod (parse): const double v = std::stod(cell);
+```
+
+It reports `strtod`, `strtof`, `strtold`, `atof`, `std::stod/stof/stold`, the
+`scanf` family with a float conversion, the `printf` family (including
+`fprintf` and `snprintf`) with a `%f %e %g %a` conversion, and the iostream
+manipulators `std::fixed`, `std::scientific`, `std::hexfloat`,
+`std::defaultfloat` and `std::setprecision`. It also catches the forms that
+hide a call: a macro body naming `std::strtod`, a function pointer to it, and a
+`using std::stod;` with the call it enables. Integer formats and parses
+(`%d`, `%016llx`, `std::stoll`), member functions, other namespaces' symbols,
+comments and string literals pass. `std::to_chars` and `std::from_chars` pass:
+they are specified to round correctly.
+
+Name the one file that holds your own correctly rounded routine with
+`--allow` (repeatable, a file name or glob). Exit code 1 means a conversion was
+found, so the command works as a CI gate. `--json PATH` writes the hits.
+A bare `std::to_string(double)` or `stream << double` with no manipulator
+cannot be told from its integer use by a text scan and is not reported.
 
 **Check your own code.** Write a small harness that calls your numeric code
 and emits each result with `fpparity.h`, list your targets in
@@ -112,7 +146,9 @@ its narrowest cause.
 | `-O0` | an optimization pass changed the arithmetic |
 
 A difference no flag removes is reported as a math library or hardware
-difference. A flag a compiler rejects is skipped and listed.
+difference, or, for the `text.` probe values, as a C library text
+conversion difference with a pointer to `fp-parity scan`. A flag a compiler
+rejects is skipped and listed.
 
 ## How values are compared
 
@@ -126,8 +162,8 @@ ulps.
 
 | Code | Meaning |
 |---|---|
-| 0 | every target matched the baseline bit for bit |
-| 1 | at least one value differs |
+| 0 | every target matched the baseline bit for bit (`scan`: no conversion found) |
+| 1 | at least one value differs (`scan`: a conversion found) |
 | 2 | usage, configuration, or build error |
 
 `--json PATH` also writes the report as JSON, for CI.
